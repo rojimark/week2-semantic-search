@@ -75,7 +75,7 @@ Answer using only the context above. Cite your sources.`;
 
   // ── 8. Confidence signal from top chunk score ─────────────────
   const topScore = topChunks[0].similarity;
-  const confidence = topScore >= 0.85 ? 'high' : topScore >= 0.75 ? 'medium' : 'low';
+  const confidence = topScore >= 0.60 ? 'high' : topScore >= 0.35 ? 'medium' : 'low';
 
   return {
     answer,
