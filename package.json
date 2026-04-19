@@ -1,0 +1,20 @@
+{
+  "name": "week2-semantic-search",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.4.1",
+    "express": "^5.2.1",
+    "groq-sdk": "^1.1.2",
+    "openai": "^6.33.0",
+    "pg": "^8.20.0"
+  },
+  "type": "module"
+}
