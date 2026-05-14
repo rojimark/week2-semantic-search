@@ -2,7 +2,15 @@
 import Groq from 'groq-sdk';
 import { searchSimilarChunks } from './db.js';
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+// const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+
+let _groq = null;
+function getGroq() {
+  if (!_groq) {
+    _groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+  }
+  return _groq;
+}
 
 const MODEL = 'llama-3.3-70b-versatile';
 
@@ -62,7 +70,7 @@ Question: ${question}
 Answer using only the context above. Cite your sources.`;
 
   // ── 7. Generate ───────────────────────────────────────────────
-  const completion = await groq.chat.completions.create({
+  const completion = await getGroq().chat.completions.create({
     model: MODEL,
     temperature: 0.1, // Low — you want retrieval-faithful, not creative
     messages: [
@@ -90,7 +98,7 @@ Answer using only the context above. Cite your sources.`;
 }
 
 async function rephraseQuery(question) {
-  const completion = await groq.chat.completions.create({
+  const completion = await getGroq().chat.completions.create({
     model: MODEL,
     temperature: 0.1,
     messages: [

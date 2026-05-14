@@ -1,11 +1,12 @@
-import express from 'express';
-import { initDb, pool } from './db.js';
-import { embedText } from './embeddings.js';
 import dotenv from 'dotenv';
-import { askWithContext } from './rag.js';
-import { chunkText } from './chunker.js';
-
 dotenv.config();
+
+import express from 'express';
+import { initDb, getPool, searchSimilarChunks } from './db.js';
+import { embedText } from './embeddings.js';
+import { chunkText } from './chunker.js';
+import { askWithContext } from './rag.js';
+import { embeddingQueue } from './queue.js';
 
 const app = express();
 app.use(express.json());
@@ -23,11 +24,9 @@ app.post('/search', async (req, res) => {
 
 app.post('/ask', async (req, res) => {
   const { question } = req.body;
-
   if (!question?.trim()) {
     return res.status(400).json({ error: 'question is required' });
   }
-
   try {
     const result = await askWithContext(question);
     res.json(result);
@@ -37,62 +36,53 @@ app.post('/ask', async (req, res) => {
   }
 });
 
-app.get('/debug-search', async (req, res) => {
-  const { searchSimilarChunks } = await import('./db.js');
-  const results = await searchSimilarChunks('What is semantic search?', 10, 0.0);
-  res.json(results);
-});
-
 app.post('/ingest', async (req, res) => {
   const { documents } = req.body;
-
   if (!Array.isArray(documents) || documents.length === 0) {
     return res.status(400).json({ error: 'documents array is required' });
   }
 
-  const results = [];
-
+  const jobs = [];
   for (const doc of documents) {
     if (!doc.content || !doc.source) {
-      results.push({ source: doc.source ?? 'unknown', status: 'skipped', reason: 'missing content or source' });
+      jobs.push({ source: doc.source ?? 'unknown', status: 'skipped', reason: 'missing content or source' });
       continue;
     }
-
-    const chunks = chunkText(doc.content);
-    let inserted = 0;
-    let skipped = 0;
-
-    for (const chunk of chunks) {
-      const embedding = await embedText(chunk);
-
-      const existing = await pool.query(
-        `SELECT id FROM documents
-         WHERE source = $1
-         AND 1 - (embedding <=> $2) > 0.98
-         LIMIT 1`,
-        [doc.source, JSON.stringify(embedding)]
-      );
-
-      if (existing.rows.length > 0) {
-        skipped++;
-        continue;
-      }
-
-      await pool.query(
-        `INSERT INTO documents (content, source, embedding) VALUES ($1, $2, $3)`,
-        [chunk, doc.source, JSON.stringify(embedding)]
-      );
-      inserted++;
-    }
-
-    results.push({ source: doc.source, status: 'done', inserted, skipped });
+    const job = await embeddingQueue.add('index-document', {
+      source: doc.source,
+      content: doc.content,
+    }, {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 2000 }
+    });
+    jobs.push({ id: job.id, source: doc.source, status: 'queued' });
   }
 
-  res.json({ results });
+  res.json({ jobs });
+});
+
+app.get('/ingest/:jobId', async (req, res) => {
+  const job = await embeddingQueue.getJob(req.params.jobId);
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+  const state = await job.getState();
+  res.json({
+    id: job.id,
+    source: job.data.source,
+    state,
+    progress: job.progress,
+    result: job.returnvalue ?? null,
+    failedReason: job.failedReason ?? null,
+  });
+});
+
+app.get('/debug-search', async (req, res) => {
+  const results = await searchSimilarChunks('What is semantic search?', 10, 0.0);
+  res.json(results);
 });
 
 const PORT = process.env.PORT || 3001;
-
 initDb().then(() => {
   app.listen(PORT, () => console.log(`Server on :${PORT}`));
 });
