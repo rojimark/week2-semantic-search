@@ -97,6 +97,90 @@ Answer using only the context above. Cite your sources.`;
   };
 }
 
+export async function streamAnswer(question) {
+  // ── 1. Rephrase + retrieve (identical to askWithContext) ──────
+  const rephrasedQuestion = await rephraseQuery(question);
+  console.log(`Original: "${question}"`);
+  console.log(`Rephrased: "${rephrasedQuestion}"`);
+ 
+  const candidates = await searchSimilarChunks(rephrasedQuestion, RETRIEVAL_TOP_K);
+  console.log('candidates:', candidates.length, candidates.map(c => c.similarity));
+ 
+  // ── 2. Filter + early return on miss ─────────────────────────
+  const relevant = candidates.filter(c => c.similarity >= SIMILARITY_THRESHOLD);
+ 
+  if (relevant.length === 0) {
+    // Return null stream so the route can send the no-info response as a
+    // single token event + metadata, keeping the SSE contract consistent.
+    return {
+      stream: null,
+      metadata: {
+        answer: "I don't have enough information in my knowledge base to answer that question confidently.",
+        sources: [],
+        confidence: 'none',
+        retrievalCount: 0,
+      },
+    };
+  }
+ 
+  // ── 3. Re-rank + build context (identical to askWithContext) ──
+  const topChunks = relevant
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, CONTEXT_TOP_K);
+ 
+  const contextBlock = topChunks
+    .map((chunk, i) => `[${i + 1}] (source: ${chunk.source}, score: ${chunk.similarity.toFixed(3)})\n${chunk.content}`)
+    .join('\n\n');
+ 
+  const systemPrompt = `You are a precise question-answering assistant.
+ 
+RULES:
+- Answer ONLY using the provided context passages below.
+- Do NOT use your training knowledge to fill in gaps.
+- If the context doesn't contain enough information to answer, say so explicitly.
+- Cite sources using the bracketed numbers [1], [2], etc. from the context.
+- Be concise. Do not pad your answer.`;
+ 
+  const userMessage = `Context passages:
+${contextBlock}
+ 
+Question: ${question}
+ 
+Answer using only the context above. Cite your sources.`;
+ 
+  // ── 4. Confidence metadata (computed before streaming starts) ─
+  const topScore = topChunks[0].similarity;
+  const confidence = topScore >= 0.60 ? 'high' : topScore >= 0.35 ? 'medium' : 'low';
+ 
+  const metadata = {
+    sources: topChunks.map(c => ({
+      content: c.content,
+      source: c.source,
+      similarity: parseFloat(c.similarity.toFixed(4)),
+    })),
+    confidence,
+    retrievalCount: relevant.length,
+  };
+ 
+  // ── 5. Open a streaming completion ───────────────────────────
+  // stream: true tells the SDK to return an async iterable of chunks
+  // instead of waiting for the full completion.
+  const stream = await getGroq().chat.completions.create({
+    model: MODEL,
+    temperature: 0.1,
+    stream: true,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage },
+    ],
+  });
+ 
+  // Return the raw SDK stream + metadata to the route.
+  // The route is responsible for writing SSE events — rag.js doesn't
+  // touch res at all, keeping this function testable and transport-agnostic.
+  return { stream, metadata };
+}
+
 async function rephraseQuery(question) {
   const completion = await getGroq().chat.completions.create({
     model: MODEL,
